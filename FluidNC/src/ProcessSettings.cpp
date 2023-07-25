@@ -25,6 +25,7 @@
 #include "Driver/fluidnc_gpio.h"  // gpio_dump()
 
 #include "FluidPath.h"
+#include "HashFS.h"
 
 #include <cstring>
 #include <map>
@@ -132,7 +133,7 @@ void settings_restore(uint8_t restore_flag) {
 
     if (restore_flag & SettingsRestore::Defaults) {
         bool restore_startup = restore_flag & SettingsRestore::StartupLines;
-        for (Setting* s = Setting::List; s; s = s->next()) {
+        for (Setting* s : Setting::List) {
             if (!s->getDescription()) {
                 const char* name = s->getName();
                 if (restore_startup) {  // all settings get restored
@@ -156,7 +157,7 @@ void settings_restore(uint8_t restore_flag) {
 
 // Get settings values from non volatile storage into memory
 static void load_settings() {
-    for (Setting* s = Setting::List; s; s = s->next()) {
+    for (Setting* s : Setting::List) {
         s->load();
     }
 }
@@ -185,7 +186,7 @@ static Error report_gcode(const char* value, WebUI::AuthenticationLevel auth_lev
 }
 
 static void show_settings(Channel& out, type_t type) {
-    for (Setting* s = Setting::List; s; s = s->next()) {
+    for (Setting* s : Setting::List) {
         if (s->getType() == type && s->getGrblName()) {
             // The following test could be expressed more succinctly with XOR,
             // but is arguably clearer when written out
@@ -198,7 +199,7 @@ static Error report_normal_settings(const char* value, WebUI::AuthenticationLeve
     return Error::Ok;
 }
 static Error list_grbl_names(const char* value, WebUI::AuthenticationLevel auth_level, Channel& out) {
-    for (Setting* setting = Setting::List; setting; setting = setting->next()) {
+    for (Setting* setting : Setting::List) {
         const char* gn = setting->getGrblName();
         if (gn) {
             log_to(out, "$", gn << " => $" << setting->getName());
@@ -207,7 +208,7 @@ static Error list_grbl_names(const char* value, WebUI::AuthenticationLevel auth_
     return Error::Ok;
 }
 static Error list_settings(const char* value, WebUI::AuthenticationLevel auth_level, Channel& out) {
-    for (Setting* s = Setting::List; s; s = s->next()) {
+    for (Setting* s : Setting::List) {
         const char* displayValue = auth_failed(s, value, auth_level) ? "<Authentication required>" : s->getStringValue();
         if (s->getType() != PIN) {
             show_setting(s->getName(), displayValue, NULL, out);
@@ -216,7 +217,7 @@ static Error list_settings(const char* value, WebUI::AuthenticationLevel auth_le
     return Error::Ok;
 }
 static Error list_changed_settings(const char* value, WebUI::AuthenticationLevel auth_level, Channel& out) {
-    for (Setting* s = Setting::List; s; s = s->next()) {
+    for (Setting* s : Setting::List) {
         const char* value = s->getStringValue();
         if (!auth_failed(s, value, auth_level) && strcmp(value, s->getDefaultString())) {
             if (s->getType() != PIN) {
@@ -228,7 +229,7 @@ static Error list_changed_settings(const char* value, WebUI::AuthenticationLevel
     return Error::Ok;
 }
 static Error list_commands(const char* value, WebUI::AuthenticationLevel auth_level, Channel& out) {
-    for (Command* cp = Command::List; cp; cp = cp->next()) {
+    for (Command* cp : Command::List) {
         const char* name    = cp->getName();
         const char* oldName = cp->getGrblName();
         LogStream   s(out, "$");
@@ -492,11 +493,6 @@ static Error doJog(const char* value, WebUI::AuthenticationLevel auth_level, Cha
     return gc_execute_line(jogLine);
 }
 
-static const char* alarmString(ExecAlarm alarmNumber) {
-    auto it = AlarmNames.find(alarmNumber);
-    return it == AlarmNames.end() ? NULL : it->second;
-}
-
 static Error listAlarms(const char* value, WebUI::AuthenticationLevel auth_level, Channel& out) {
     if (sys.state == State::ConfigAlarm) {
         log_to(out, "Configuration alarm is active. Check the boot messages for 'ERR'.");
@@ -634,8 +630,10 @@ static Error xmodem_receive(const char* value, WebUI::AuthenticationLevel auth_l
     } else {
         log_info("Reception failed or was canceled");
     }
-    outfile->fpath().rehash_fs();
+    std::filesystem::path fname = outfile->fpath();
     delete outfile;
+    HashFS::rehash_file(fname);
+
     return size < 0 ? Error::UploadFailed : Error::Ok;
 }
 
@@ -887,7 +885,7 @@ Error do_command_or_setting(const char* key, char* value, WebUI::AuthenticationL
 
     // Next search the settings list by text name. If found, set a new
     // value if one is given, otherwise display the current value
-    for (Setting* s = Setting::List; s; s = s->next()) {
+    for (Setting* s : Setting::List) {
         if (strcasecmp(s->getName(), key) == 0) {
             if (auth_failed(s, value, auth_level)) {
                 return Error::AuthenticationFailed;
@@ -903,7 +901,7 @@ Error do_command_or_setting(const char* key, char* value, WebUI::AuthenticationL
 
     // Then search the setting list by compatible name.  If found, set a new
     // value if one is given, otherwise display the current value in compatible mode
-    for (Setting* s = Setting::List; s; s = s->next()) {
+    for (Setting* s : Setting::List) {
         if (s->getGrblName() && strcasecmp(s->getGrblName(), key) == 0) {
             if (auth_failed(s, value, auth_level)) {
                 return Error::AuthenticationFailed;
@@ -919,7 +917,7 @@ Error do_command_or_setting(const char* key, char* value, WebUI::AuthenticationL
     // If we did not find a setting, look for a command.  Commands
     // handle values internally; you cannot determine whether to set
     // or display solely based on the presence of a value.
-    for (Command* cp = Command::List; cp; cp = cp->next()) {
+    for (Command* cp : Command::List) {
         if ((strcasecmp(cp->getName(), key) == 0) || (cp->getGrblName() && strcasecmp(cp->getGrblName(), key) == 0)) {
             if (auth_failed(cp, value, auth_level)) {
                 return Error::AuthenticationFailed;
@@ -935,7 +933,7 @@ Error do_command_or_setting(const char* key, char* value, WebUI::AuthenticationL
     Error retval = Error::InvalidStatement;
     if (!value) {
         bool found = false;
-        for (Setting* s = Setting::List; s; s = s->next()) {
+        for (Setting* s : Setting::List) {
             auto test = s->getName();
             // The C++ standard regular expression library supports many more
             // regular expression forms than the simple one in Regex.cpp, but
