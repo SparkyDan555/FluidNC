@@ -5,8 +5,9 @@
 #include "Machine/MachineConfig.h"  // config
 #include "Serial.h"                 // allChannels
 
-UartChannel::UartChannel(bool addCR) : Channel("uart", addCR) {
+UartChannel::UartChannel(int num, bool addCR) : Channel("uart_channel", num, addCR) {
     _lineedit = new Lineedit(this, _line, Channel::maxLine - 1);
+    _active   = false;
 }
 
 void UartChannel::init() {
@@ -16,10 +17,41 @@ void UartChannel::init() {
     } else {
         log_error("UartChannel: missing uart" << _uart_num);
     }
+    setReportInterval(_report_interval_ms);
 }
 void UartChannel::init(Uart* uart) {
     _uart = uart;
     allChannels.registration(this);
+    if (_report_interval_ms) {
+        log_info("uart_channel" << _uart_num << " created at report interval: " << _report_interval_ms);
+    } else {
+        log_info("uart_channel" << _uart_num << " created");
+    }
+    // Tell the channel listener that FluidNC has restarted.
+    // The initial newline clears out any garbage characters that might have
+    // resulted from the UART initialization and turn-on
+    print("\n");
+    out("RST", "MSG:");
+    if (_uart_num) {
+        getExpanderId();
+    }
+}
+
+void UartChannel::getExpanderId() {
+    out("ID", "EXP:");
+    char   buf[128];
+    size_t len;
+    while ((len = _uart->timedReadBytes(buf, 128, 50)) != 0) {
+        buf[len] = '\0';
+        if (strncmp(buf, "(EXP,", 5) == 0) {
+            auto pos = strrchr(buf, ')');
+            if (pos) {
+                *pos = '\0';
+            }
+            print("ok\n");
+            log_info("IO Expander " << &buf[5]);
+        }
+    }
 }
 
 size_t UartChannel::write(uint8_t c) {
@@ -81,17 +113,14 @@ bool UartChannel::lineComplete(char* line, char c) {
     return false;
 }
 
-Channel* UartChannel::pollLine(char* line) {
-    // UART0 is the only Uart instance that can be a channel input device
-    // Other UART users like RS485 use it as a dumb character device
-    if (_lineedit == nullptr) {
-        return nullptr;
-    }
-    return Channel::pollLine(line);
-}
-
 int UartChannel::read() {
-    return _uart->read();
+    int c = _uart->read();
+    if (c == 0x11) {
+        // 0x11 is XON.  If we receive that, it is a request to use software flow control
+        _uart->setSwFlowControl(true, -1, -1);
+        return -1;
+    }
+    return c;
 }
 
 void UartChannel::flushRx() {
@@ -115,7 +144,34 @@ size_t UartChannel::timedReadBytes(char* buffer, size_t length, TickType_t timeo
     return length - remlen;
 }
 
-UartChannel Uart0(true);  // Primary serial channel with LF to CRLF conversion
+void UartChannel::out(const std::string& s, const char* tag) {
+    log_stream(*this, "[" << tag << s);
+}
+
+void UartChannel::out_acked(const std::string& s, const char* tag) {
+    log_stream(*this, "[" << tag << s);
+}
+
+void UartChannel::registerEvent(uint8_t pinnum, InputPin* obj) {
+    _uart->registerInputPin(pinnum, obj);
+}
+
+bool UartChannel::setAttr(int index, bool* value, const std::string& attrString) {
+    out(attrString, "EXP:");
+    _ackwait = 1;
+    for (int i = 0; i < 20; i++) {
+        pollLine(nullptr);
+        if (_ackwait < 1) {
+            return _ackwait == 0;
+        }
+        delay_us(100);
+    }
+    _ackwait = 0;
+    log_error("IO Expander is unresponsive");
+    return false;
+}
+
+UartChannel Uart0(0, true);  // Primary serial channel with LF to CRLF conversion
 
 void uartInit() {
     auto uart0 = new Uart(0);

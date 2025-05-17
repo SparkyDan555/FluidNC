@@ -1,36 +1,37 @@
 #pragma once
 
-#include "src/Pin.h"
 #include "src/Event.h"
-#include "src/Config.h"
+#include "src/Pin.h"
+#include <string>
 
-namespace Machine {
-    class EventPin {
-    protected:
-        static void gpioAction(int, void*, bool);
+class InputPin : public Pin {
+protected:
+    std::string _legend;  // The name that appears in init() messages and the name of the configuration item
+    bool        _value = false;
 
-        Event* _event = nullptr;  // Subordinate event that is called conditionally
+public:
+    InputPin(const char* legend) : _legend(legend) {};
 
-        pinnum_t _gpio;
+    void init();
 
-        static bool inactive(EventPin* pin);
+    void update(bool state) { _value = state; };
+    bool get() { return _value; }
 
-    public:
-        std::string _legend;  // The name that appears in init() messages and the name of the configuration item
+    virtual void trigger(bool active);
 
-        EventPin(Event* event, const char* legend, Pin* pin);
+    const std::string& legend() { return _legend; }
 
-        // This is a pointer instead of a reference because the derived classes
-        // like ControlPin and LimitPin "own" the actual Pin object.  That is
-        // necessary because those objects are configurable and must stay
-        // within their class for later operations on the configuration tree.
-        Pin* _pin = nullptr;
+    ~InputPin() {}
+};
 
-        void init();
-        bool get();
+class EventPin : public InputPin {
+protected:
+    const Event* _event;
 
-        virtual void update(bool state) {};
+public:
+    EventPin(const Event* event, const char* legend) : InputPin(legend), _event(event) {};
 
-        ~EventPin();
-    };
+    void trigger(bool active) override;
+
+    ~EventPin() {}
 };

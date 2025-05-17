@@ -4,8 +4,6 @@
 #pragma once
 
 #include "Pins/PinDetail.h"
-#include "Pins/PinCapabilities.h"
-#include "Pins/PinAttributes.h"
 
 #include <esp_attr.h>  // IRAM_ATTR
 #include <cstdint>
@@ -16,21 +14,6 @@
 #include "Assert.h"
 
 // #define DEBUG_PIN_DUMP  // Pin debugging. WILL spam you with a lot of data!
-
-// Yuck, yuck, yuck... apparently we can't create a template with an IRAM_ATTR, because GCC refuses to obide
-// by the attributes. In other words, _all_ templates are out when using an ISR! This define makes an anonymous
-// method in the class, which can be used to wrap a single function. It can then be used by running the attachInterrupt
-// with ISRHandler.
-//
-// Usage:
-// - In header file (private / protected members) or in cpp file in anonymous namespace (public members)
-//   CreateISRHandlerFor(LimitPin, handleISR);
-// - When attaching an ISR: _pin.attachInterrupt(ISRHandler, EITHER_EDGE, this);
-//
-// I'd rather not use any defines, but templates... but apparently there's no choice here. Let's just make it as safe
-// as possible...
-#define CreateISRHandlerFor(className, methodName)                                                                                         \
-    static void IRAM_ATTR ISRHandler(void* data) { static_cast<className*>(data)->methodName(); }
 
 // Pin class. A pin is basically a thing that can 'output', 'input' or do both. GPIO on an ESP32 comes to mind,
 // but there are way more possible pins. Think about I2S/I2C/SPI extenders, RS485 driven pin devices and even
@@ -79,7 +62,7 @@ class Pin {
 
     static const char* parse(std::string_view str, Pins::PinDetail*& detail);
 
-    inline Pin(Pins::PinDetail* detail) : _detail(detail) {}
+    explicit inline Pin(Pins::PinDetail* detail) : _detail(detail) {}
 
 public:
     using Capabilities = Pins::PinCapabilities;
@@ -109,7 +92,7 @@ public:
     inline Pin(Pin&& o) : _detail(nullptr) { std::swap(_detail, o._detail); }
 
     inline Pin& operator=(const Pin& o) = delete;
-    inline Pin& operator                =(Pin&& o) {
+    inline Pin& operator=(Pin&& o) {
         std::swap(_detail, o._detail);
         return *this;
     }
@@ -127,13 +110,20 @@ public:
         Assert(_detail->capabilities().has(expectedBehavior), "Requested pin %s does not have the expected behavior.", name().c_str());
         return _detail->_index;
     }
+    inline int8_t driveStrength() const { return _detail->driveStrength(); }
+    inline bool   canStep() { return _detail->canStep(); }
+    inline int    index() { return _detail->_index; }
+    inline bool   inverted() { return _detail->_inverted; }
 
-    void write(bool value) const;
-    void synchronousWrite(bool value) const;
+    inline void write(bool value) const { _detail->write(value); };
+    inline void synchronousWrite(bool value) const { _detail->synchronousWrite(value); };
+
+    inline void     setDuty(uint32_t duty) const { _detail->setDuty(duty); }
+    inline uint32_t maxDuty() const { return _detail->maxDuty(); }
 
     inline bool read() const { return _detail->read() != 0; }
 
-    inline void setAttr(Attr attributes) const { _detail->setAttr(attributes); }
+    inline void setAttr(Attr attributes, uint32_t frequency = 0) const { _detail->setAttr(attributes, frequency); }
 
     inline Attr getAttr() const { return _detail->getAttr(); }
 
@@ -142,12 +132,7 @@ public:
 
     static Pin Error() { return Pin(errorPin); }
 
-    // ISR handlers. Map methods on 'this' types.
-
-    // Backward compatibility ISR handler:
-    void attachInterrupt(void (*callback)(void*), int mode, void* arg = nullptr) const { _detail->attachInterrupt(callback, arg, mode); }
-
-    void detachInterrupt() const { _detail->detachInterrupt(); }
+    void registerEvent(InputPin* obj) { _detail->registerEvent(obj); };
 
     // Other functions:
     Capabilities capabilities() const { return _detail->capabilities(); }
@@ -155,7 +140,7 @@ public:
     inline std::string name() const { return _detail->toString(); }
 
     void report(const char* legend);
-    void report(std::string legend) { report(legend.c_str()); }
+    void report(const std::string& legend) { report(legend.c_str()); }
 
     inline void swap(Pin& o) { std::swap(o._detail, _detail); }
 

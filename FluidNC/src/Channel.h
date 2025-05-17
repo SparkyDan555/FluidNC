@@ -16,48 +16,97 @@
 
 #pragma once
 
-#include "Error.h"  // Error
-#include "GCode.h"  // gc_modal_t
-#include "Types.h"  // State
+#include "src/Error.h"        // Error
+#include "src/GCode.h"        // gc_modal_t
+#include "src/Types.h"        // State
+#include "src/RealtimeCmd.h"  // Cmd
+#include "src/UTF8.h"
+
+#include "src/Pins/PinAttributes.h"
+#include "src/Machine/EventPin.h"
+
 #include <Stream.h>
 #include <freertos/FreeRTOS.h>  // TickType_T
 #include <queue>
 
 class Channel : public Stream {
+private:
+    void pin_event(uint32_t pinnum, bool active);
+
+    static constexpr int PinACK = 0xB2;
+    static constexpr int PinNAK = 0xB3;
+    static constexpr int PinRST = 0xB4;
+
+    static constexpr int timeout = 2000;
+
 public:
-    static const int maxLine = 255;
+    static constexpr int PinLowFirst  = 0x100;
+    static constexpr int PinLowLast   = 0x13f;
+    static constexpr int PinHighFirst = 0x140;
+    static constexpr int PinHighLast  = 0x17f;
+
+    static constexpr int maxLine = 255;
+
+    int _message_level = MsgLevelVerbose;
 
 protected:
-    const char* _name;
-    char        _line[maxLine];
-    size_t      _linelen;
-    bool        _addCR     = false;
-    char        _lastWasCR = false;
+    std::string _name;
+    char        _line[maxLine] = {};
+    size_t      _linelen       = 0;
+    bool        _addCR         = false;
+    char        _lastWasCR     = false;
 
     std::queue<uint8_t> _queue;
 
     uint32_t _reportInterval = 0;
     int32_t  _nextReportTime = 0;
 
-    gc_modal_t _lastModal;
-    uint8_t    _lastTool;
-    float      _lastSpindleSpeed;
-    float      _lastFeedRate;
-    State      _lastState;
-    MotorMask  _lastLimits;
-    bool       _lastProbe;
+    gc_modal_t  _lastModal        = modal_defaults;
+    uint8_t     _lastTool         = 0;
+    float       _lastSpindleSpeed = 0;
+    float       _lastFeedRate     = 0;
+    const char* _lastStateName    = "";
+    MotorMask   _lastLimits       = 0;
+    bool        _lastJobActive    = false;
+    std::string _lastPinString    = "";
 
+    bool       _reportOvr = true;
     bool       _reportWco = true;
     CoordIndex _reportNgc = CoordIndex::End;
 
+    Cmd _last_rt_cmd = Cmd::None;
+
+    std::map<int, InputPin*> _pins;
+
+    UTF8 _utf8;
+
+    bool _ended   = false;
+    bool _percent = false;
+
+protected:
+    bool _active = true;
+    bool _paused = false;
+
 public:
-    Channel(const char* name, bool addCR = false) : _name(name), _linelen(0), _addCR(addCR) {}
+    explicit Channel(const std::string& name, bool addCR = false);
+    explicit Channel(const char* name, bool addCR = false);
+    Channel(const char* name, int num, bool addCR = false);
     virtual ~Channel() = default;
 
-    virtual void     handle() {};
-    virtual Channel* pollLine(char* line);
-    virtual void     ack(Error status);
-    const char*      name() { return _name; }
+    int _ackwait = 0;  // 1 - waiting, 0 - ACKed, -1 - NAKed
+
+    virtual void       handle() {};
+    virtual Error      pollLine(char* line);
+    virtual void       ack(Error status);
+    const std::string& name() { return _name; }
+
+    virtual void sendLine(MsgLevel level, const char* line);
+    virtual void sendLine(MsgLevel level, const std::string* line);
+    virtual void sendLine(MsgLevel level, const std::string& line);
+
+    size_t _line_number = 0;
+
+    std::string _progress;
 
     // rx_buffer_available() is the number of bytes that can be sent without overflowing
     // a reception buffer, even if the system is busy.  Channels that can handle external
@@ -78,6 +127,8 @@ public:
     // be a realtime character.
     virtual bool realtimeOkay(char c) { return true; }
 
+    void handleRealtimeCharacter(uint8_t byte);
+
     // lineComplete() accumulates the character into the line, returning true if a line
     // end is seen.
     virtual bool lineComplete(char* line, char c);
@@ -87,9 +138,13 @@ public:
         return readBytes(buffer, length);
     }
 
-    virtual void stopJob() {}
+    virtual bool is_visible(const std::string& stem, std::string extension, bool isdir);
 
-    size_t timedReadBytes(uint8_t* buffer, size_t length, TickType_t timeout) { return timedReadBytes((char*)buffer, length, timeout); }
+    size_t timedReadBytes(uint8_t* buffer, size_t length, TickType_t timeout) {
+        return timedReadBytes(reinterpret_cast<char*>(buffer), length, timeout);
+    }
+
+    void writeUTF8(uint32_t code);
 
     bool setCr(bool on) {
         bool retval = _addCR;
@@ -97,6 +152,7 @@ public:
         return retval;
     }
 
+    void notifyOvr() { _reportOvr = true; }
     void notifyWco() { _reportWco = true; }
     void notifyNgc(CoordIndex coord) { _reportNgc = coord; }
 
@@ -104,8 +160,46 @@ public:
     int read() override { return -1; }
     int available() override { return _queue.size(); }
 
+    virtual void print_msg(MsgLevel level, const char* msg);
+
+    void print_msg(MsgLevel level, const std::string& msg) { print_msg(level, msg.c_str()); }
+
     uint32_t     setReportInterval(uint32_t ms);
     uint32_t     getReportInterval() { return _reportInterval; }
     virtual void autoReport();
     void         autoReportGCodeState();
+
+    void push(uint8_t byte);
+    void push(const uint8_t* data, size_t length) {
+        while (length--) {
+            push(*data++);
+        }
+    }
+    void push(std::string_view data) {
+        for (auto const& c : data) {
+            push((uint8_t)c);
+        }
+    }
+    void push(const std::string& s) { push(reinterpret_cast<const uint8_t*>(s.c_str()), s.length()); }
+
+    void end() { _ended = true; }
+    void percent() { _percent = true; }
+
+    // Pin extender functions
+    virtual void out(const char* s, const char* tag);
+    virtual void out(const std::string& s, const char* tag);
+    virtual void out_acked(const std::string& s, const char* tag);
+
+    void ready();
+    void registerEvent(uint8_t pinnum, InputPin* obj);
+
+    size_t lineNumber() { return _line_number; }
+
+    virtual void   save() {}
+    virtual void   restore() {}
+    virtual size_t position() { return 0; }
+    virtual void   set_position(size_t pos) {}
+
+    void pause();
+    void resume();
 };

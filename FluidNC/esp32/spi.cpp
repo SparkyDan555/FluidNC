@@ -2,6 +2,7 @@
 // Use of this source code is governed by a GPLv3 license that can be found in the LICENSE file.
 
 #include "Driver/spi.h"
+#include "Driver/fluidnc_gpio.h"
 
 #include "driver/spi_common.h"
 #include "src/Config.h"
@@ -12,7 +13,8 @@
 #    define HSPI_HOST SPI2_HOST
 #endif
 
-bool spi_init_bus(pinnum_t sck_pin, pinnum_t miso_pin, pinnum_t mosi_pin, bool dma) {
+// cppcheck-suppress unusedFunction
+bool spi_init_bus(pinnum_t sck_pin, pinnum_t miso_pin, pinnum_t mosi_pin, bool dma, int8_t sck_drive_strength, int8_t mosi_drive_strength) {
     // Start the SPI bus with the pins defined here.  Once it has been started,
     // those pins "stick" and subsequent attempts to restart it with defaults
     // for the miso, mosi, and sck pins are ignored
@@ -27,9 +29,19 @@ bool spi_init_bus(pinnum_t sck_pin, pinnum_t miso_pin, pinnum_t mosi_pin, bool d
     };
 
     // Depends on the chip variant
-    return !spi_bus_initialize(HSPI_HOST, &bus_cfg, dma ? SPI_DMA_CH_AUTO : SPI_DMA_DISABLED);
+    bool ok = !spi_bus_initialize(HSPI_HOST, &bus_cfg, dma ? SPI_DMA_CH_AUTO : SPI_DMA_DISABLED);
+    if (ok) {
+        if (sck_drive_strength != -1) {
+            gpio_drive_strength(sck_pin, sck_drive_strength);
+        }
+        if (mosi_drive_strength != -1) {
+            gpio_drive_strength(mosi_pin, mosi_drive_strength);
+        }
+    }
+    return ok;
 }
 
+// cppcheck-suppress unusedFunction
 void spi_deinit_bus() {
     esp_err_t err = spi_bus_free(HSPI_HOST);
     log_debug("deinit spi " << int(err));

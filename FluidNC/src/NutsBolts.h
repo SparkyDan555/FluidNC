@@ -7,6 +7,7 @@
 // #define true 1
 
 #include <cstdint>
+#include <string_view>
 #include "Logging.h"
 #include "Driver/delay_usecs.h"
 
@@ -50,19 +51,16 @@ const float INCH_PER_MM = (0.0393701f);
 #define bitnum_is_true(target, num) ((target & bitnum_to_mask(num)) != 0)
 #define bitnum_is_false(target, num) ((target & bitnum_to_mask(num)) == 0)
 
-// Read a floating point value from a string. Line points to the input buffer, char_counter
+// Read a floating point value from a string. Line points to the input buffer, pos
 // is the indexer pointing to the current character of the line, while float_ptr is
 // a pointer to the result variable. Returns true when it succeeds
-bool read_float(const char* line, size_t* char_counter, float* float_ptr);
-
-// Blocking delay for very short time intervals
-void delay_us(int32_t microseconds);
+bool read_float(const char* line, size_t& pos, float& result);
 
 // Delay while checking for realtime characters and other events
-bool delay_msec(uint32_t milliseconds, DwellMode mode);
+bool dwell_ms(uint32_t milliseconds, DwellMode mode = DwellMode::Dwell);
 
 // Delay without checking for realtime events.  Use only for short delays
-void delay_ms(uint16_t ms);
+void delay_ms(uint32_t ms);
 
 // Computes hypotenuse, avoiding avr-gcc's bloated version and the extra error checking.
 float hypot_f(float x, float y);
@@ -84,21 +82,15 @@ const char* to_hex(uint32_t n);
 
 bool  char_is_numeric(char value);
 char* trim(char* value);
-
-template <class T>
-void swap(T& a, T& b) {
-    T c(a);
-    a = b;
-    b = c;
-}
+void  trim(std::string_view& sv);
 
 template <typename T>
-T myMap(T x, T in_min, T in_max, T out_min, T out_max) {  // DrawBot_Badge
+T myMap(T x, const T in_min, const T in_max, T out_min, T out_max) {  // DrawBot_Badge
     return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
 }
 
 template <typename T>
-T myConstrain(T in, T min, T max) {
+T myConstrain(T in, const T min, const T max) {
     if (in < min) {
         return min;
     }
@@ -109,14 +101,14 @@ T myConstrain(T in, T min, T max) {
 }
 
 template <typename T>
-T mapConstrain(T x, T in_min, T in_max, T out_min, T out_max) {
+T mapConstrain(T x, const T in_min, const T in_max, T out_min, T out_max) {
     x = myConstrain(x, in_min, in_max);
     return myMap(x, in_min, in_max, out_min, out_max);
 }
 
 // constrain a value and issue a message. Returns true is the value was OK
 template <typename T>
-bool constrain_with_message(T& value, T min, T max, const char* name = "") {
+bool constrain_with_message(T& value, const T min, const T max, const char* name = "") {
     if (value < min || value > max) {
         log_warn(name << " value " << value << " constrained to range (" << min << "," << max << ")");
         value = myConstrain(value, min, max);

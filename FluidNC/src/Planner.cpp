@@ -121,6 +121,10 @@ static uint8_t plan_prev_block_index(uint8_t block_index) {
 
 */
 static void planner_recalculate() {
+    if (block_buffer_head == block_buffer_tail) {
+        // Nothing to do; planner buffer is empty.
+        return;
+    }
     // Initialize block index to the last block in the planner buffer.
     uint8_t block_index = plan_prev_block_index(block_buffer_head);
     // Bail. Can't do anything with one only one plan-able block.
@@ -289,6 +293,9 @@ void plan_update_velocity_profile_parameters() {
         block_index        = plan_next_block_index(block_index);
     }
     pl.previous_nominal_speed = prev_nominal_speed;  // Update prev nominal speed for next incoming block.
+    if (block_buffer_tail != block_buffer_head) {
+        plan_cycle_reinitialize();
+    }
 }
 
 bool plan_buffer_line(float* target, plan_line_data_t* pl_data) {
@@ -306,9 +313,17 @@ bool plan_buffer_line(float* target, plan_line_data_t* pl_data) {
     int32_t target_steps[MAX_N_AXIS], position_steps[MAX_N_AXIS];
     float   unit_vec[MAX_N_AXIS], delta_mm;
     // Copy position data based on type of motion being planned.
-    copyAxes(position_steps, block->motion.systemMotion ? get_motor_steps() : pl.position);
-
-    auto n_axis = config->_axes->_numberAxis;
+    if (block->motion.systemMotion) {
+        get_motor_steps(position_steps);
+    } else {
+        if (!block->is_jog && Homing::unhomed_axes()) {
+            log_info("Unhomed axes: " << Axes::maskToNames(Homing::unhomed_axes()));
+            send_alarm(ExecAlarm::Unhomed);
+            return false;
+        }
+        copyAxes(position_steps, pl.position);
+    }
+    auto n_axis = Axes::_numberAxis;
     for (size_t idx = 0; idx < n_axis; idx++) {
         // Calculate target position in absolute steps, number of steps for each axis, and determine max step events.
         // Also, compute individual axes distance for move and prep unit vector calculations.
@@ -418,7 +433,7 @@ void plan_sync_position() {
     // TODO: For motor configurations not in the same coordinate frame as the machine position,
     // this function needs to be updated to accomodate the difference.
     if (config->_axes) {
-        copyAxes(pl.position, get_motor_steps());
+        get_motor_steps(pl.position);
     }
 }
 

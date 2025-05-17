@@ -43,7 +43,8 @@ namespace MotorDrivers {
         // Run and hold current configuration items are in (float) Amps,
         // but the TMCStepper library expresses run current as (uint16_t) mA
         // and hold current as (float) fraction of run current.
-        uint16_t run_i = (uint16_t)(_run_current * 1000.0);
+        float    _mode_current = isHoming ? _homing_current : _run_current;
+        uint16_t run_i         = (uint16_t)(_mode_current * 1000.0);
 
         _cs_pin.synchronousWrite(true);
 
@@ -68,25 +69,23 @@ namespace MotorDrivers {
                 break;
             case TrinamicMode ::StallGuard:  //TODO: check all configurations for stallguard
             {
-                auto axisConfig     = config->_axes->_axis[this->axis_index()];
-                auto homingFeedRate = (axisConfig->_homing != nullptr) ? axisConfig->_homing->_feedRate : 200;
                 log_debug(axisName() << " Stallguard");
                 tmc2209->en_spreadCycle(false);
                 tmc2209->pwm_autoscale(true);
-                tmc2209->TCOOLTHRS(calc_tstep(homingFeedRate, 150.0));
+                tmc2209->TCOOLTHRS(calc_tstep(150));
                 tmc2209->SGTHRS(_stallguard);
                 break;
             }
         }
 
         // dump the registers. This is helpful for people migrating to the Pro version
-        log_debug("CHOPCONF: 0x" << to_hex(tmc2209->CHOPCONF()));
-        log_debug("COOLCONF: 0x" << to_hex(tmc2209->COOLCONF()));
-        log_debug("TPWMTHRS: 0x" << to_hex(tmc2209->TPWMTHRS()));
-        log_debug("TCOOLTHRS: 0x" << to_hex(tmc2209->TCOOLTHRS()));
-        log_debug("GCONF: 0x" << to_hex(tmc2209->GCONF()));
-        log_debug("PWMCONF: 0x" << to_hex(tmc2209->PWMCONF()));
-        log_debug("IHOLD_IRUN: 0x" << to_hex(tmc2209->IHOLD_IRUN()));
+        log_verbose("CHOPCONF: " << to_hex(tmc2209->CHOPCONF()));
+        log_verbose("COOLCONF: " << to_hex(tmc2209->COOLCONF()));
+        log_verbose("TPWMTHRS: " << to_hex(tmc2209->TPWMTHRS()));
+        log_verbose("TCOOLTHRS: " << to_hex(tmc2209->TCOOLTHRS()));
+        log_verbose("GCONF: " << to_hex(tmc2209->GCONF()));
+        log_verbose("PWMCONF: " << to_hex(tmc2209->PWMCONF()));
+        log_verbose("IHOLD_IRUN: " << to_hex(tmc2209->IHOLD_IRUN()));
 
         _cs_pin.synchronousWrite(false);
     }
@@ -114,13 +113,13 @@ namespace MotorDrivers {
     }
 
     void TMC2209Driver::set_disable(bool disable) {
-        _cs_pin.synchronousWrite(true);
         if (TrinamicUartDriver::startDisable(disable)) {
             if (_use_enable) {
+                _cs_pin.synchronousWrite(true);
                 tmc2209->toff(TrinamicUartDriver::toffValue());
+                _cs_pin.synchronousWrite(false);
             }
         }
-        _cs_pin.synchronousWrite(false);
     }
 
     bool TMC2209Driver::test() {

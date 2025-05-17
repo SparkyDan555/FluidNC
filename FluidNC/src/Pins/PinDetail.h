@@ -3,7 +3,6 @@
 
 #pragma once
 
-#include "PinCapabilities.h"
 #include "PinAttributes.h"
 #include "PinOptionsParser.h"
 
@@ -12,7 +11,7 @@
 #include <string>
 #include <vector>
 
-typedef uint8_t pinnum_t;
+class InputPin;
 
 namespace Pins {
 
@@ -20,26 +19,31 @@ namespace Pins {
     class PinDetail {
     protected:
     public:
-        int _index;
+        int  _index    = -1;
+        bool _inverted = false;
 
         PinDetail(int number) : _index(number) {}
-        PinDetail(const PinDetail& o) = delete;
-        PinDetail(PinDetail&& o)      = delete;
+        PinDetail(const PinDetail& o)            = delete;
+        PinDetail(PinDetail&& o)                 = delete;
         PinDetail& operator=(const PinDetail& o) = delete;
-        PinDetail& operator=(PinDetail&& o) = delete;
+        PinDetail& operator=(PinDetail&& o)      = delete;
 
         virtual PinCapabilities capabilities() const = 0;
 
         // I/O:
         virtual void          write(int high) = 0;
         virtual void          synchronousWrite(int high);
-        virtual int           read()                       = 0;
-        virtual void          setAttr(PinAttributes value) = 0;
-        virtual PinAttributes getAttr() const              = 0;
+        virtual void          setDuty(uint32_t duty) {};
+        virtual uint32_t      maxDuty() { return 0; }
+        virtual int           read()                                                = 0;
+        virtual void          setAttr(PinAttributes value, uint32_t frequencey = 0) = 0;
+        virtual PinAttributes getAttr() const                                       = 0;
 
-        // ISR's.
-        virtual void attachInterrupt(void (*callback)(void*), void* arg, int mode);
-        virtual void detachInterrupt();
+        virtual int8_t driveStrength() { return -1; }
+
+        virtual bool canStep() { return false; }
+
+        virtual void registerEvent(InputPin* obj);
 
         virtual std::string toString() = 0;
 

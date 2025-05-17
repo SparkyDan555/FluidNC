@@ -5,23 +5,34 @@
 #include "src/Serial.h"                 // Cmd
 #include "src/System.h"                 // sys
 #include "src/Machine/MachineConfig.h"  // config
+#include "src/Job.h"                    // Job::
+#include <sstream>
+#include <iomanip>
 
-void MacroEvent::run(void* arg) {
-    if (sys.state != State::Idle) {
-        log_error("Macro can only be used in idle state");
-        return;
-    }
-    log_debug("Macro " << _num);
-    config->_macros->run_macro(_num);
+void MacroEvent::run(void* arg) const {
+    config->_macros->_macro[_num].run(nullptr);
 }
 
-MacroEvent macro0Event { 0 };
-MacroEvent macro1Event { 1 };
-MacroEvent macro2Event { 2 };
-MacroEvent macro3Event { 3 };
+const MacroEvent macro0Event { 0 };
+const MacroEvent macro1Event { 1 };
+const MacroEvent macro2Event { 2 };
+const MacroEvent macro3Event { 3 };
+
+Macro Macros::_startup_line0 { "startup_line0" };
+Macro Macros::_startup_line1 { "startup_line1" };
+Macro Macros::_macro[] = {
+    Macro { "Macro0" },
+    Macro { "Macro1" },
+    Macro { "Macro2" },
+    Macro { "Macro3" },
+};
+
+Macro Macros::_after_homing { "after_homing" };
+Macro Macros::_after_reset { "after_reset" };
+Macro Macros::_after_unlock { "after_unlock" };
 
 // clang-format off
-std::map<std::string, Cmd> overrideCodes = {
+const std::map<std::string, Cmd> overrideCodes = {
     { "fr", Cmd::FeedOvrReset },
     { "f>", Cmd::FeedOvrCoarsePlus },
     { "f<", Cmd::FeedOvrCoarseMinus },
@@ -47,45 +58,115 @@ Cmd findOverride(std::string name) {
     return it == overrideCodes.end() ? Cmd::None : it->second;
 }
 
-bool Macros::run_macro(size_t index) {
-    if (index >= n_macros) {
-        return false;
-    }
-    auto macro = _macro[index];
-    if (macro == "") {
+bool Macro::run(Channel* channel) {
+    if (_gcode.length()) {
+        if (channel) {
+            log_debug_to(*channel, "Run " << name() << ": " << _gcode);
+        }
+        Job::save();
+        Job::nest(new MacroChannel(this), channel);
         return true;
     }
+    return false;
+}
 
-    char c;
-    for (int i = 0; i < macro.length(); i++) {
-        c = macro[i];
-        switch (c) {
-            case '&':
-                // & is a proxy for newlines in macros, because you cannot
-                // enter a newline directly in a config file string value.
-                WebUI::inputBuffer.push('\n');
-                break;
-            case '#':
-                if ((i + 3) > macro.length()) {
-                    log_error("Missing characters after # realtime escape in macro");
-                    return false;
+Error MacroChannel::readLine(char* line, int maxlen) {
+    int                len       = 0;
+    const std::string& gcode     = _macro->_gcode;
+    const int          gcode_len = gcode.length();
+    while (_position < gcode_len) {
+        if (len >= maxlen) {
+            return Error::LineLengthExceeded;
+        }
+        char c = gcode[_position++];
+        // XXX this can probably be pushed into the GCode parser alongside expressions
+        // Realtime characters can be inserted in macros with #xx escapes
+        if (c == '#') {
+            if ((_position + 2) <= gcode_len) {
+                Cmd cmd = findOverride(gcode.substr(_position, 2));
+                if (cmd != Cmd::None) {
+                    _position += 2;
+                    execute_realtime_command(cmd, *this);
+                    continue;
                 }
-                {
-                    std::string s(macro.c_str() + i + 1, 2);
-                    Cmd         cmd = findOverride(s);
-                    if (cmd == Cmd::None) {
-                        log_error("Bad #xx realtime escape in macro");
-                        return false;
-                    }
-                    WebUI::inputBuffer.push(static_cast<uint8_t>(cmd));
-                }
-                i += 3;
-                break;
-            default:
-                WebUI::inputBuffer.push(c);
-                break;
+            }
+        }
+        // & is a proxy for newlines in macros, because you cannot
+        // enter a newline directly in a config file string value.
+        if (c == '&' || c == '\n') {
+            break;
+        }
+        line[len++] = c;
+    }
+    line[len] = '\0';
+    ++_line_number;
+    if (len == 0) {
+        ++_blank_lines;
+    }
+
+    return len ? Error::Ok : Error::Eof;
+}
+
+void MacroChannel::ack(Error status) {
+    if (status != Error::Ok) {
+        //        log_error(static_cast<int>(status) << " (" << errorString(status) << ") in " << name() << " at line " << lineNumber());
+        //        if (status != Error::GcodeUnsupportedCommand) {
+        // Do not stop on unsupported commands because most senders do not stop.
+        // Stop the macro job on other errors
+        notifyf("Macro job error", "Error:%d in %s at line: %d", status, name().c_str(), lineNumber());
+        _pending_error = status;
+        //        }
+    }
+}
+
+MacroChannel::MacroChannel(Macro* macro) : Channel(macro->name(), false), _macro(macro) {}
+
+void MacroChannel::end_message() {
+    _progress += name();
+    _progress += ": Sent";
+}
+
+Error MacroChannel::pollLine(char* line) {
+    // Macros only execute as proper jobs so we should not be polling one with a null line
+    if (!line) {
+        return Error::NoData;
+    }
+    if (_pending_error != Error::Ok) {
+        return _pending_error;
+    }
+    if (_percent) {
+        _percent = false;
+        // If the first non-blank line in the macro is a % line, it denotes start-of-file.
+        // Otherwise a % line causes the rest of the macro to be skipped, per
+        // https://linuxcnc.org/docs/html/gcode/overview.html#gcode:file-requirements
+        // The line with % is not blank, so if it is the first non-blank line
+        // _line_number will be one more than _blank_lines
+        if (_line_number != _blank_lines + 1) {
+            _ended = true;
         }
     }
-    WebUI::inputBuffer.push('\n');
-    return true;
+    if (_ended) {
+        end_message();
+        return Error::Eof;
+    }
+    switch (auto err = readLine(line, Channel::maxLine)) {
+        case Error::Ok: {
+            log_debug("Macro line: " << line);
+            float percent_complete = (float)_position * 100.0f / _macro->get().length();
+
+            std::ostringstream s;
+            s << "SD:" << std::fixed << std::setprecision(2) << percent_complete << "," << name();
+            _progress = s.str();
+        }
+            return Error::Ok;
+        case Error::Eof:
+            end_message();
+            return Error::Eof;
+        default:
+            log_error("Macro readLine failed");
+            _progress = "";
+            return err;
+    }
 }
+
+MacroChannel::~MacroChannel() {}

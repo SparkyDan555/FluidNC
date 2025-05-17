@@ -1,12 +1,19 @@
 #pragma once
 
-#include "WebUI/JSONEncoder.h"
-#include "WebUI/Authentication.h"
-#include "Report.h"  // info_channel
-#include "GCode.h"   // CoordIndex
+#include "src/JSONEncoder.h"
+#include "src/WebUI/Authentication.h"
+#include "src/Report.h"  // info_channel
+#include "src/GCode.h"   // CoordIndex
 
+#include <string_view>
 #include <map>
 #include <nvs.h>
+#include <string_view>
+
+// forward declarations
+namespace Machine {
+    class MachineConfig;
+}
 
 // Initialize the configuration subsystem
 void settings_init();
@@ -46,6 +53,9 @@ typedef enum : uint8_t {
     WEBCMD,    // ESP3D_WebUI commands that are not directly settings
 } type_t;
 
+bool get_param(const char* parameter, const char* key, std::string& s);
+bool paramIsJSON(const char* cmd_params);
+
 typedef enum : uint8_t {
     WG,  // Readable and writable as guest
     WU,  // Readable and writable as user and admin
@@ -72,6 +82,9 @@ public:
 };
 
 class Command : public Word {
+private:
+    bool _synchronous = true;
+
 protected:
     bool (*_cmdChecker)();
 
@@ -81,22 +94,27 @@ public:
     static std::vector<Command*> List;
 
     ~Command() {}
-    Command(const char* description, type_t type, permissions_t permissions, const char* grblName, const char* fullName, bool (*cmdChecker)());
+    Command(const char*   description,
+            type_t        type,
+            permissions_t permissions,
+            const char*   grblName,
+            const char*   fullName,
+            bool (*cmdChecker)(),
+            bool synchronous = false);
 
     // The default implementation of addWebui() does nothing.
     // Derived classes may override it to do something.
-    virtual void addWebui(WebUI::JSONencoder*) {};
+    virtual void addWebui(JSONencoder*) {};
 
-    virtual Error action(char* value, WebUI::AuthenticationLevel auth_level, Channel& out) = 0;
+    virtual Error action(const char* value, AuthenticationLevel auth_level, Channel& out) = 0;
+    bool          synchronous() { return _synchronous; }
 };
 
 class Setting : public Word {
 private:
 protected:
     // group_t _group;
-    axis_t _axis = NO_AXIS;
-
-    bool (*_checker)(char*);
+    axis_t      _axis = NO_AXIS;
     const char* _keyName;
 
 public:
@@ -107,9 +125,9 @@ public:
     // so common code can enumerate them.
     static std::vector<Setting*> List;
 
-    Error check(char* s);
+    Error check_state();
 
-    static Error report_nvs_stats(const char* value, WebUI::AuthenticationLevel auth_level, Channel& out) {
+    static Error report_nvs_stats(const char* value, AuthenticationLevel auth_level, Channel& out) {
         nvs_stats_t stats;
         if (esp_err_t err = nvs_get_stats(NULL, &stats)) {
             return Error::NvsGetStatsFailed;
@@ -128,16 +146,19 @@ public:
         return Error::Ok;
     }
 
-    static Error eraseNVS(const char* value, WebUI::AuthenticationLevel auth_level, Channel& out) {
+    static Error eraseNVS(const char* value, AuthenticationLevel auth_level, Channel& out) {
         nvs_erase_all(_handle);
         return Error::Ok;
     }
 
     ~Setting() {}
-    // Setting(const char *description, group_t group, const char * grblName, const char* fullName, bool (*checker)(char *));
-    Setting(const char* description, type_t type, permissions_t permissions, const char* grblName, const char* fullName, bool (*checker)(char*));
-    axis_t getAxis() { return _axis; }
-    void   setAxis(axis_t axis) { _axis = axis; }
+    Setting(const char* description, type_t type, permissions_t permissions, const char* grblName, const char* fullName);
+    axis_t getAxis() {
+        return _axis;
+    }
+    void setAxis(axis_t axis) {
+        _axis = axis;
+    }
 
     // load() reads the backing store to get the current
     // value of the setting.  This could be slow so it
@@ -147,11 +168,13 @@ public:
 
     // The default implementation of addWebui() does nothing.
     // Derived classes may override it to do something.
-    virtual void addWebui(WebUI::JSONencoder*) {};
+    virtual void addWebui(JSONencoder*) {};
 
-    virtual Error       setStringValue(char* value) = 0;
-    virtual const char* getStringValue()            = 0;
-    virtual const char* getCompatibleValue() { return getStringValue(); }
+    virtual Error       setStringValue(std::string_view s) = 0;
+    virtual const char* getStringValue()                   = 0;
+    virtual const char* getCompatibleValue() {
+        return getStringValue();
+    }
     virtual const char* getDefaultString() = 0;
 };
 
@@ -173,8 +196,7 @@ public:
                int32_t       defVal,
                int32_t       minVal,
                int32_t       maxVal,
-               bool (*checker)(char*),
-               bool currentIsNvm = false);
+               bool          currentIsNvm = false);
 
     IntSetting(type_t        type,
                permissions_t permissions,
@@ -183,18 +205,48 @@ public:
                int32_t       defVal,
                int32_t       minVal,
                int32_t       maxVal,
-               bool (*checker)(char*) = NULL,
-               bool currentIsNvm      = false) :
-        IntSetting(NULL, type, permissions, grblName, name, defVal, minVal, maxVal, checker, currentIsNvm) {}
+               bool          currentIsNvm = false) :
+        IntSetting(NULL, type, permissions, grblName, name, defVal, minVal, maxVal, currentIsNvm) {}
 
     void        load();
     void        setDefault();
-    void        addWebui(WebUI::JSONencoder*);
-    Error       setStringValue(char* value);
+    void        addWebui(JSONencoder*);
+    Error       setStringValue(std::string_view s);
     const char* getStringValue();
     const char* getDefaultString();
 
     int32_t get() { return _currentValue; }
+};
+
+class FloatProxySetting : public Setting {
+    float* _valuep;
+
+public:
+    FloatProxySetting(const char* grblName, const char* fullName, float* valuep) :
+        Setting(fullName, type_t::GRBL, permissions_t::WU, grblName, fullName), _valuep(valuep) {}
+
+    const char* getStringValue() override {
+        static char strval[32];
+        std::snprintf(strval, 31, "%.3f", *_valuep);
+        return strval;
+    }
+    Error       setStringValue(std::string_view value) { return Error::ReadOnlySetting; }
+    const char* getDefaultString() override { return ""; }
+};
+
+// IntProxySetting needs a getter function instead of a simple value pointer
+// because there are a variety of other ways to get the information, including
+// function calls and type conversion from mask to bool
+class IntProxySetting : public Setting {
+    std::function<int(Machine::MachineConfig const&)> _getter;
+    std::string                                       _cachedValue;
+
+public:
+    IntProxySetting(const char* grblName, const char* fullName, std::function<int(Machine::MachineConfig const&)> getter) :
+        Setting(fullName, type_t::GRBL, permissions_t::WU, grblName, fullName), _getter(getter), _cachedValue("") {}
+    const char* getStringValue() override;
+    Error       setStringValue(std::string_view value) { return Error::ReadOnlySetting; }
+    const char* getDefaultString() override { return ""; }
 };
 
 class Coordinates {
@@ -207,7 +259,8 @@ public:
 
     const char* getName() { return _name; }
     bool        load();
-    void        setDefault() {
+
+    void setDefault() {
         float zeros[MAX_N_AXIS] = {
             0.0,
         };
@@ -217,7 +270,12 @@ public:
     void get(float* value) { memcpy(value, _currentValue, sizeof(_currentValue)); }
     // Return a pointer to the array
     const float* get() { return _currentValue; }
-    void         set(float* value);
+    // Get an individual component
+    const float get(int axis) { return _currentValue[axis]; }
+    // Set an individual component
+    void set(int axis, float value) { _currentValue[axis] = value; }
+
+    void set(float* value);
 };
 
 extern Coordinates* coords[CoordIndex::End];
@@ -239,22 +297,21 @@ public:
                   const char*   name,
                   const char*   defVal,
                   int           min,
-                  int           max,
-                  bool (*checker)(char*));
+                  int           max);
 
-    StringSetting(
-        type_t type, permissions_t permissions, const char* grblName, const char* name, const char* defVal, bool (*checker)(char*) = NULL) :
-        StringSetting(NULL, type, permissions, grblName, name, defVal, 0, 0, checker) {};
+    StringSetting(type_t type, permissions_t permissions, const char* grblName, const char* name, const char* defVal) :
+        StringSetting(NULL, type, permissions, grblName, name, defVal, 0, 0) {};
 
     void        load();
     void        setDefault();
-    void        addWebui(WebUI::JSONencoder*);
-    Error       setStringValue(char* value);
+    void        addWebui(JSONencoder*);
+    Error       setStringValue(std::string_view s);
     const char* getStringValue();
     const char* getDefaultString();
 
     const char* get() { return _currentValue.c_str(); }
 };
+
 struct cmp_str {
     bool operator()(char const* a, char const* b) const { return strcasecmp(a, b) < 0; }
 };
@@ -262,35 +319,28 @@ typedef std::map<const char*, int8_t, cmp_str> enum_opt_t;
 
 class EnumSetting : public Setting {
 private:
-    int8_t                                  _defaultValue;
-    int8_t                                  _storedValue;
-    int8_t                                  _currentValue;
-    std::map<const char*, int8_t, cmp_str>* _options;
-    const char*                             enumToString(int8_t value);
+    int8_t                                        _defaultValue;
+    int8_t                                        _storedValue;
+    int8_t                                        _currentValue;
+    const std::map<const char*, int8_t, cmp_str>* _options;
+    const char*                                   enumToString(int8_t value);
 
 public:
-    EnumSetting(const char*   description,
-                type_t        type,
-                permissions_t permissions,
-                const char*   grblName,
-                const char*   name,
-                int8_t        defVal,
-                enum_opt_t*   opts,
-                bool (*checker)(char*));
+    EnumSetting(const char*       description,
+                type_t            type,
+                permissions_t     permissions,
+                const char*       grblName,
+                const char*       name,
+                int8_t            defVal,
+                const enum_opt_t* opts);
 
-    EnumSetting(type_t        type,
-                permissions_t permissions,
-                const char*   grblName,
-                const char*   name,
-                int8_t        defVal,
-                enum_opt_t*   opts,
-                bool (*checker)(char*) = NULL) :
-        EnumSetting(NULL, type, permissions, grblName, name, defVal, opts, checker) {}
+    EnumSetting(type_t type, permissions_t permissions, const char* grblName, const char* name, int8_t defVal, const enum_opt_t* opts) :
+        EnumSetting(NULL, type, permissions, grblName, name, defVal, opts) {}
 
     void        load();
     void        setDefault();
-    void        addWebui(WebUI::JSONencoder*);
-    Error       setStringValue(char* value);
+    void        addWebui(JSONencoder*);
+    Error       setStringValue(std::string_view s);
     const char* getStringValue();
     const char* getDefaultString();
     void        showList();
@@ -302,6 +352,7 @@ extern bool notIdleOrJog();
 extern bool notIdleOrAlarm();
 extern bool anyState();
 extern bool cycleOrHold();
+extern bool allowConfigStates();
 
 class IPaddrSetting : public Setting {
 private:
@@ -310,25 +361,13 @@ private:
     uint32_t _storedValue;
 
 public:
-    IPaddrSetting(const char*   description,
-                  type_t        type,
-                  permissions_t permissions,
-                  const char*   grblName,
-                  const char*   name,
-                  uint32_t      defVal,
-                  bool (*checker)(char*));
-    IPaddrSetting(const char*   description,
-                  type_t        type,
-                  permissions_t permissions,
-                  const char*   grblName,
-                  const char*   name,
-                  const char*   defVal,
-                  bool (*checker)(char*));
+    IPaddrSetting(const char* description, type_t type, permissions_t permissions, const char* grblName, const char* name, uint32_t defVal);
+    IPaddrSetting(const char* description, type_t type, permissions_t permissions, const char* grblName, const char* name, const char* defVal);
 
     void        load();
     void        setDefault();
-    void        addWebui(WebUI::JSONencoder*);
-    Error       setStringValue(char* value);
+    void        addWebui(JSONencoder*);
+    Error       setStringValue(std::string_view s);
     const char* getStringValue();
     const char* getDefaultString();
 
@@ -337,7 +376,7 @@ public:
 
 class WebCommand : public Command {
 private:
-    Error (*_action)(char*, WebUI::AuthenticationLevel, Channel& out);
+    Error (*_action)(const char*, AuthenticationLevel, Channel& out);
     const char* password;
 
 public:
@@ -346,34 +385,43 @@ public:
                permissions_t permissions,
                const char*   grblName,
                const char*   name,
-               Error (*action)(char*, WebUI::AuthenticationLevel, Channel& out),
+               Error (*action)(const char*, AuthenticationLevel, Channel& out),
                bool (*cmdChecker)() = notIdleOrAlarm) :
         Command(description, type, permissions, grblName, name, cmdChecker),
         _action(action) {}
 
-    Error action(char* value, WebUI::AuthenticationLevel auth_level, Channel& out);
+    Error action(const char* value, AuthenticationLevel auth_level, Channel& out);
 };
 
 class UserCommand : public Command {
 private:
-    Error (*_action)(const char*, WebUI::AuthenticationLevel, Channel&);
+    Error (*_action)(const char*, AuthenticationLevel, Channel&);
 
 public:
     UserCommand(const char* grblName,
                 const char* name,
-                Error (*action)(const char*, WebUI::AuthenticationLevel, Channel&),
+                Error (*action)(const char*, AuthenticationLevel, Channel&),
                 bool (*cmdChecker)(),
-                permissions_t auth = WG) :
-        Command(NULL, GRBLCMD, auth, grblName, name, cmdChecker),
+                permissions_t auth        = WG,
+                bool          synchronous = true) :
+        Command(NULL, GRBLCMD, auth, grblName, name, cmdChecker, synchronous),
         _action(action) {}
 
-    Error action(char* value, WebUI::AuthenticationLevel auth_level, Channel& response);
+    Error action(const char* value, AuthenticationLevel auth_level, Channel& response);
+};
+class AsyncUserCommand : public UserCommand {
+public:
+    AsyncUserCommand(const char* grblName,
+                     const char* name,
+                     Error (*action)(const char*, AuthenticationLevel, Channel&),
+                     bool (*cmdChecker)(),
+                     permissions_t auth = WG) :
+        UserCommand(grblName, name, action, cmdChecker, auth, false) {}
 };
 
 // Execute the startup script lines stored in non-volatile storage upon initialization
-void  settings_execute_startup();
-Error settings_execute_line(char* line, Channel& out, WebUI::AuthenticationLevel);
-Error do_command_or_setting(const char* key, char* value, WebUI::AuthenticationLevel auth_level, Channel&);
-Error execute_line(char* line, Channel& channel, WebUI::AuthenticationLevel auth_level);
+Error settings_execute_line(char* line, Channel& out, AuthenticationLevel);
+Error do_command_or_setting(const char* key, const char* value, AuthenticationLevel auth_level, Channel&);
+Error execute_line(char* line, Channel& channel, AuthenticationLevel auth_level);
 
-extern enum_opt_t onoffOptions;
+extern const enum_opt_t onoffOptions;

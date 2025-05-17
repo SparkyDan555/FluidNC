@@ -3,12 +3,12 @@
 
 #include "WSChannel.h"
 
-#ifdef ENABLE_WIFI
-#    include "WebServer.h"
-#    include <WebSocketsServer.h>
-#    include <WiFi.h>
+#include "src/UartChannel.h"
+#include "WebServer.h"
+#include <WebSocketsServer.h>
+#include <WiFi.h>
 
-#    include "../Serial.h"  // is_realtime_command
+#include "src/Serial.h"  // is_realtime_command
 
 namespace WebUI {
     class WSChannels;
@@ -16,7 +16,7 @@ namespace WebUI {
     WSChannel::WSChannel(WebSocketsServer* server, uint8_t clientNum) : Channel("websocket"), _server(server), _clientNum(clientNum) {}
 
     int WSChannel::read() {
-        if (_dead) {
+        if (!_active) {
             return -1;
         }
         if (_rtchar == -1) {
@@ -28,12 +28,16 @@ namespace WebUI {
         }
     }
 
-    WSChannel::operator bool() const { return true; }
+    WSChannel::operator bool() const {
+        return true;
+    }
 
-    size_t WSChannel::write(uint8_t c) { return write(&c, 1); }
+    size_t WSChannel::write(uint8_t c) {
+        return write(&c, 1);
+    }
 
     size_t WSChannel::write(const uint8_t* buffer, size_t size) {
-        if (buffer == NULL || _dead || !size) {
+        if (buffer == NULL || !_active || !size) {
             return 0;
         }
 
@@ -42,7 +46,7 @@ namespace WebUI {
         const uint8_t* out;
         size_t         outlen;
         if (_output_line.length() == 0 && complete_line) {
-            // Avoid the overhead of std::string if we the
+            // Avoid the overhead of std::string if the
             // input is a complete line and nothing is pending.
             out    = buffer;
             outlen = size;
@@ -58,19 +62,11 @@ namespace WebUI {
         }
         int stat = _server->canSend(_clientNum);
         if (stat < 0) {
-            _dead = true;
-            log_debug("WebSocket is dead; closing");
+            _active = false;
             return 0;
         }
-        if (stat == 0) {
-            if (_output_line.length()) {
-                _output_line = "";
-            }
-            return size;
-        }
         if (!_server->sendBIN(_clientNum, out, outlen)) {
-            _dead = true;
-            log_debug("WebSocket is unresponsive; closing");
+            _active = false;
         }
         if (_output_line.length()) {
             _output_line = "";
@@ -79,39 +75,33 @@ namespace WebUI {
         return size;
     }
 
-    void WSChannel::pushRT(char ch) { _rtchar = ch; }
-
-    bool WSChannel::push(const uint8_t* data, size_t length) {
-        if (_dead) {
-            return false;
-        }
-        char c;
-        while ((c = *data++) != '\0') {
-            _queue.push(c);
-        }
-        return true;
-    }
-
-    bool WSChannel::push(std::string& s) { return push((uint8_t*)s.c_str(), s.length()); }
-
     bool WSChannel::sendTXT(std::string& s) {
-        if (_dead) {
+        if (!_active) {
             return false;
         }
         if (!_server->sendTXT(_clientNum, s.c_str())) {
-            _dead = true;
-            log_debug("WebSocket is unresponsive; closing");
-            WSChannels::removeChannel(this);
+            _active = false;
+            log_debug_to(Uart0, "WebSocket is unresponsive; closing");
             return false;
         }
         return true;
     }
 
     void WSChannel::autoReport() {
-        int stat = _server->canSend(_clientNum);
-        if (stat > 0) {
-            Channel::autoReport();
+        if (!_active) {
+            return;
         }
+        int stat = _server->canSend(_clientNum);
+        if (stat < 0) {
+            _active = false;
+            log_debug_to(Uart0, "WebSocket is dead; closing");
+            return;
+        }
+        if (stat == 0) {
+            return;
+        }
+
+        Channel::autoReport();
     }
 
     WSChannel::~WSChannel() {}
@@ -164,34 +154,24 @@ namespace WebUI {
         }
     }
 
-    bool WSChannels::runGCode(int pageid, std::string cmd) {
-        bool has_error = false;
-
+    bool WSChannels::runGCode(int pageid, std::string_view cmd) {
         WSChannel* wsChannel = getWSChannel(pageid);
         if (wsChannel) {
-            // It is very tempting to let wsChannel->push() handle the realtime
-            // character sequences so we don't have to do it here.  That does not work
-            // because we need to know whether to add a newline.  We should not add newline
-            // on a realtime sequence, but we must add one (if not already present)
-            // on a text command.
-            if (cmd.length() == 3 && cmd[0] == 0xc2 && is_realtime_command(cmd[1]) && cmd[2] == '\0') {
-                // Handles old WebUIs that send a null after high-bit-set realtime chars
-                wsChannel->pushRT(cmd[1]);
-            } else if (cmd.length() == 2 && cmd[0] == 0xc2 && is_realtime_command(cmd[1])) {
-                // Handles old WebUIs that send a null after high-bit-set realtime chars
-                wsChannel->pushRT(cmd[1]);
-            } else if (cmd.length() == 1 && is_realtime_command(cmd[0])) {
-                wsChannel->pushRT(cmd[0]);
-            } else {
-                if (cmd.length() && cmd[cmd.length() - 1] != '\n') {
-                    cmd += '\n';
+            if (cmd.length()) {
+                if (is_realtime_command(cmd[0])) {
+                    for (auto const& c : cmd) {
+                        wsChannel->handleRealtimeCharacter((uint8_t)c);
+                    }
+                } else {
+                    wsChannel->push(cmd);
+                    if (cmd.back() != '\n') {
+                        wsChannel->push('\n');
+                    }
                 }
-                has_error = !wsChannel->push(cmd);
             }
-        } else {
-            has_error = true;
+            return false;
         }
-        return has_error;
+        return true;  // Error - no websocket
     }
 
     bool WSChannels::sendError(int pageid, std::string err) {
@@ -214,18 +194,18 @@ namespace WebUI {
     void WSChannels::handleEvent(WebSocketsServer* server, uint8_t num, uint8_t type, uint8_t* payload, size_t length) {
         switch (type) {
             case WStype_DISCONNECTED:
-                log_debug("WebSocket disconnect " << num);
+                log_debug_to(Uart0, "WebSocket disconnect " << num);
                 WSChannels::removeChannel(num);
                 break;
             case WStype_CONNECTED: {
                 WSChannel* wsChannel = new WSChannel(server, num);
                 if (!wsChannel) {
-                    log_error("Creating WebSocket channel failed");
+                    log_error_to(Uart0, "Creating WebSocket channel failed");
                 } else {
                     std::string uri((char*)payload, length);
 
                     IPAddress ip = server->remoteIP(num);
-                    log_debug("WebSocket " << num << " from " << ip << " uri " << uri);
+                    log_debug_to(Uart0, "WebSocket " << num << " from " << ip << " uri " << uri);
 
                     _lastWSChannel = wsChannel;
                     allChannels.registration(wsChannel);
@@ -253,5 +233,62 @@ namespace WebUI {
                 break;
         }
     }
+
+    void WSChannels::handlev3Event(WebSocketsServer* server, uint8_t num, uint8_t type, uint8_t* payload, size_t length) {
+        switch (type) {
+            case WStype_DISCONNECTED:
+                printf("WebSocket disconnect %d\n", num);
+                WSChannels::removeChannel(num);
+                break;
+            case WStype_CONNECTED: {
+                log_debug_to(Uart0, "WStype_Connected");
+                WSChannel* wsChannel = new WSChannel(server, num);
+                if (!wsChannel) {
+                    log_error_to(Uart0, "Creating WebSocket channel failed");
+                } else {
+                    std::string uri((char*)payload, length);
+
+                    IPAddress ip = server->remoteIP(num);
+                    log_debug_to(Uart0, "WebSocket " << num << " from " << ip << " uri " << uri);
+
+                    _lastWSChannel = wsChannel;
+                    allChannels.registration(wsChannel);
+                    _wsChannels[num] = wsChannel;
+
+                    if (uri == "/") {
+                        std::string s("currentID:");
+                        s += std::to_string(num);
+                        // send message to client
+                        _webWsChannels.push_front(wsChannel);
+                        wsChannel->sendTXT(s);
+                        s = "activeID:";
+                        s += std::to_string(wsChannel->id());
+                        server->broadcastTXT(s.c_str());
+                    }
+
+                    for (uint8_t i = 0; i < WEBSOCKETS_SERVER_CLIENT_MAX; i++)
+                        if (i != num && server->clientIsConnected(i)) {
+                            server->disconnect(i);
+                        }
+                }
+            } break;
+            case WStype_TEXT:
+                try {
+                    std::string msg = (const char*)payload;
+                    if (msg.rfind("PING:", 0) == 0) {
+                        std::string response("PING:60000:60000");
+                        _wsChannels.at(num)->sendTXT(response);
+                    } else
+                        _wsChannels.at(num)->push(payload, length);
+                } catch (std::out_of_range& oor) {}
+                break;
+            case WStype_BIN:
+                try {
+                    _wsChannels.at(num)->push(payload, length);
+                } catch (std::out_of_range& oor) {}
+                break;
+            default:
+                break;
+        }
+    }
 }
-#endif

@@ -23,7 +23,6 @@
 */
 
 #include "Spindle.h"
-#include "Driver/PwmPin.h"
 
 #include <cstdint>
 
@@ -31,16 +30,16 @@ namespace Spindles {
     // This adds support for PWM H-Bridge Spindles
     class HBridge : public Spindle {
     public:
-        HBridge() = default;
+        HBridge(const char* name) : Spindle(name) {}
 
         // PWM(Pin&& output, Pin&& enable, Pin&& direction, uint32_t minRpm, uint32_t maxRpm) :
         //     _min_rpm(minRpm), _max_rpm(maxRpm), _output_pin(std::move(output)), _enable_pin(std::move(enable)),
         //     _direction_pin(std::move(direction)) {}
 
-        HBridge(const HBridge&) = delete;
-        HBridge(HBridge&&)      = delete;
+        HBridge(const HBridge&)            = delete;
+        HBridge(HBridge&&)                 = delete;
         HBridge& operator=(const HBridge&) = delete;
-        HBridge& operator=(HBridge&&) = delete;
+        HBridge& operator=(HBridge&&)      = delete;
 
         void init() override;
         void setSpeedfromISR(uint32_t dev_speed) override;
@@ -71,17 +70,12 @@ namespace Spindles {
             Spindle::group(handler);
         }
 
-        // Name of the configurable. Must match the name registered in the cpp file.
-        const char* name() const override { return "HBridge"; }
-
         virtual ~HBridge() {}
 
     protected:
         // TODO: A/B rename
         int32_t      _current_pwm_duty;
         SpindleState _current_state      = SpindleState::Unknown;
-        PwmPin*      _pwm_cw             = nullptr;
-        PwmPin*      _pwm_ccw            = nullptr;
         bool         _duty_update_needed = false;
 
         // _disable_with_zero_speed forces a disable when speed is 0

@@ -13,3 +13,7 @@ extern IntSetting* status_mask;
 extern IntSetting* sd_fallback_cs;
 
 extern EnumSetting* message_level;
+
+extern EnumSetting* gcode_echo;
+
+void make_proxies();

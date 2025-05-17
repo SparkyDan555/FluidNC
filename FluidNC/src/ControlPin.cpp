@@ -1,3 +1,3 @@
 #include "ControlPin.h"
 
-namespace Machine {}
+namespace Machine {};

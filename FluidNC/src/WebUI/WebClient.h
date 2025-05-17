@@ -3,10 +3,8 @@
 
 #pragma once
 
-#include "../Config.h"  // ENABLE_*
-#include "../Channel.h"
+#include "src/Channel.h"
 
-#ifdef ENABLE_WIFI
 class WebServer;
 
 namespace WebUI {
@@ -22,7 +20,17 @@ namespace WebUI {
         size_t write(const uint8_t* buffer, size_t length) override;
         void   flush();
 
+        void sendLine(MsgLevel level, const char* line) override;
+        void sendLine(MsgLevel level, const std::string* line) override;
+        void sendLine(MsgLevel level, const std::string& line) override;
+
+        void sendError(int code, const std::string& line);
+
         bool anyOutput() { return _header_sent; }
+
+        void out(const char* s, const char* tag) override;
+        void out(const std::string& s, const char* tag) override;
+        void out_acked(const std::string& s, const char* tag) override;
 
     private:
         bool                _header_sent = false;
@@ -35,5 +43,3 @@ namespace WebUI {
 
     extern WebClient webClient;
 }
-
-#endif

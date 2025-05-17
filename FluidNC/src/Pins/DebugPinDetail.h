@@ -26,7 +26,7 @@ namespace Pins {
         bool shouldEvent();
 
     public:
-        DebugPinDetail(PinDetail* implementation) :
+        explicit DebugPinDetail(PinDetail* implementation) :
             PinDetail(implementation->number()), _implementation(implementation), _lastEvent(0), _eventCount(0), _isHigh(false),
             _isrHandler({ 0 }) {}
 
@@ -35,12 +35,8 @@ namespace Pins {
         // I/O:
         void          write(int high) override;
         int           read() override;
-        void          setAttr(PinAttributes value) override;
+        void          setAttr(PinAttributes value, uint32_t frequency) override;
         PinAttributes getAttr() const override;
-
-        // ISR's:
-        void attachInterrupt(void (*callback)(void*), void* arg, int mode) override;
-        void detachInterrupt() override;
 
         std::string toString() override { return _implementation->toString(); }
 

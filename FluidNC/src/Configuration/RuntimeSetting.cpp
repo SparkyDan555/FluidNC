@@ -3,8 +3,9 @@
 
 #include "RuntimeSetting.h"
 
-#include "../Report.h"
-#include "../Protocol.h"  // send_line()
+#include "src/Report.h"
+#include "src/Protocol.h"  // send_line()
+#include "src/string_util.h"
 
 #include <cstdlib>
 #include <atomic>
@@ -44,7 +45,7 @@ namespace Configuration {
                 value->group(*this);
             } else {
                 if (newValue_ == nullptr) {
-                    log_to(out_, "/", setting_ << ":");
+                    log_stream(out_, "/" << setting_ << ":");
                     Configuration::Generator generator(out_, 1);
                     value->group(generator);
                     isHandled_ = true;
@@ -62,25 +63,25 @@ namespace Configuration {
         if (is(name)) {
             isHandled_ = true;
             if (newValue_ == nullptr) {
-                log_to(out_, "", setting_prefix() << (value ? "true" : "false"));
+                log_stream(out_, setting_prefix() << (value ? "true" : "false"));
             } else {
                 value = (!strcasecmp(newValue_, "true") || !strcasecmp(newValue_, "yes") || !strcasecmp(newValue_, "1"));
             }
         }
     }
 
-    void RuntimeSetting::item(const char* name, int32_t& value, int32_t minValue, int32_t maxValue) {
+    void RuntimeSetting::item(const char* name, int32_t& value, const int32_t minValue, const int32_t maxValue) {
         if (is(name)) {
             isHandled_ = true;
             if (newValue_ == nullptr) {
-                log_to(out_, "", setting_prefix() << value);
+                log_stream(out_, setting_prefix() << value);
             } else {
                 value = atoi(newValue_);
             }
         }
     }
 
-    void RuntimeSetting::item(const char* name, uint32_t& value, uint32_t minValue, uint32_t maxValue) {
+    void RuntimeSetting::item(const char* name, uint32_t& value, const uint32_t minValue, const uint32_t maxValue) {
         if (is(name)) {
             isHandled_ = true;
             if (newValue_ == nullptr) {
@@ -96,12 +97,12 @@ namespace Configuration {
         }
     }
 
-    void RuntimeSetting::item(const char* name, float& value, float minValue, float maxValue) {
+    void RuntimeSetting::item(const char* name, float& value, const float minValue, const float maxValue) {
         if (is(name)) {
             isHandled_ = true;
             if (newValue_ == nullptr) {
                 // XXX precision
-                log_to(out_, "", setting_prefix() << value);
+                log_stream(out_, setting_prefix() << value);
             } else {
                 char* floatEnd;
                 value = strtof(newValue_, &floatEnd);
@@ -109,24 +110,38 @@ namespace Configuration {
         }
     }
 
-    void RuntimeSetting::item(const char* name, std::string& value, int minLength, int maxLength) {
+    void RuntimeSetting::item(const char* name, UartData& wordLength, UartParity& parity, UartStop& stopBits) {
         if (is(name)) {
             isHandled_ = true;
             if (newValue_ == nullptr) {
-                log_to(out_, "", setting_prefix() << value);
+                log_stream(out_, setting_prefix() << encodeUartMode(wordLength, parity, stopBits));
+            } else {
+                const char* errstr = decodeUartMode(newValue_, wordLength, parity, stopBits);
+                if (*errstr) {
+                    log_error_to(out_, errstr);
+                }
+            }
+        }
+    }
+
+    void RuntimeSetting::item(const char* name, std::string& value, const int minLength, const int maxLength) {
+        if (is(name)) {
+            isHandled_ = true;
+            if (newValue_ == nullptr) {
+                log_stream(out_, setting_prefix() << value);
             } else {
                 value = newValue_;
             }
         }
     }
 
-    void RuntimeSetting::item(const char* name, int& value, EnumItem* e) {
+    void RuntimeSetting::item(const char* name, int& value, const EnumItem* e) {
         if (is(name)) {
             isHandled_ = true;
             if (newValue_ == nullptr) {
                 for (auto e2 = e; e2->name; ++e2) {
                     if (e2->value == value) {
-                        log_to(out_, "", setting_prefix() << e2->name);
+                        log_stream(out_, setting_prefix() << e2->name);
                         return;
                     }
                 }
@@ -165,7 +180,7 @@ namespace Configuration {
             isHandled_ = true;
             if (newValue_ == nullptr) {
                 if (value.size() == 0) {
-                    log_to(out_, "None");
+                    log_string(out_, "None");
                 } else {
                     LogStream msg(out_, "");
                     msg << setting_prefix();
@@ -206,11 +221,60 @@ namespace Configuration {
         }
     }
 
+    void RuntimeSetting::item(const char* name, std::vector<float>& value) {
+        if (is(name)) {
+            LogStream msg(out_, "");
+            isHandled_ = true;
+            if (newValue_ == nullptr) {
+                if (value.size() == 0) {
+                    out_ << "None";
+                } else {
+                    String separator = "";
+                    for (float n : value) {
+                        out_ << separator.c_str();
+                        out_ << n;
+                        separator = " ";
+                    }
+                }
+                msg << '\n';
+            } else {
+                // It is distasteful to have this code that essentially duplicates
+                // Parser.cpp speedEntryValue(), albeit using String instead of
+                // StringRange.  It would be better to have a single String version,
+                // then pass it StringRange.str()
+                auto               newStr = String(newValue_);
+                std::vector<float> smValue;
+                while (newStr.trim(), newStr.length()) {
+                    float  entry;
+                    String entryStr;
+                    auto   i = newStr.indexOf(' ');
+                    if (i >= 0) {
+                        entryStr = newStr.substring(0, i);
+                        newStr   = newStr.substring(i + 1);
+                    } else {
+                        entryStr = newStr;
+                        newStr   = "";
+                    }
+                    char* floatEnd;
+                    entry = float(strtod(entryStr.c_str(), &floatEnd));
+                    Assert(entryStr.length() == (floatEnd - entryStr.c_str()), "Bad float value");
+
+                    smValue.push_back(entry);
+                }
+                value = smValue;
+
+                if (!value.size())
+                    log_info("Using default value");
+                return;
+            }
+        }
+    }
+
     void RuntimeSetting::item(const char* name, IPAddress& value) {
         if (is(name)) {
             isHandled_ = true;
             if (newValue_ == nullptr) {
-                log_to(out_, "", setting_prefix() << IP_string(value));
+                log_stream(out_, setting_prefix() << IP_string(value));
             } else {
                 IPAddress ip;
                 if (!ip.fromString(newValue_)) {
@@ -221,15 +285,39 @@ namespace Configuration {
         }
     }
 
+    void RuntimeSetting::item(const char* name, EventPin& value) {
+        if (is(name)) {
+            isHandled_ = true;
+            if (newValue_ == nullptr) {
+                log_stream(out_, setting_prefix() << value.name());
+            } else {
+                log_string(out_, "Runtime setting of Pin objects is not supported");
+                // auto parsed = Pin::create(newValue);
+                // value.swap(parsed);
+            }
+        }
+    }
+
     void RuntimeSetting::item(const char* name, Pin& value) {
         if (is(name)) {
             isHandled_ = true;
             if (newValue_ == nullptr) {
-                log_to(out_, "", setting_prefix() << value.name());
+                log_stream(out_, setting_prefix() << value.name());
             } else {
-                log_to(out_, "Runtime setting of Pin objects is not supported");
+                log_string(out_, "Runtime setting of Pin objects is not supported");
                 // auto parsed = Pin::create(newValue);
                 // value.swap(parsed);
+            }
+        }
+    }
+
+    void RuntimeSetting::item(const char* name, Macro& value) {
+        if (is(name)) {
+            isHandled_ = true;
+            if (newValue_ == nullptr) {
+                log_stream(out_, setting_prefix() << value.get());
+            } else {
+                value.set(newValue_);
             }
         }
     }

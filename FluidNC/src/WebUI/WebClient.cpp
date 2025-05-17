@@ -1,10 +1,9 @@
 // Copyright (c) 2014 Luc Lebosse. All rights reserved.
 // Use of this source code is governed by a GPLv3 license that can be found in the LICENSE file.
 
-#ifdef ENABLE_WIFI
-#    include "../Report.h"
-#    include "WebClient.h"
-#    include <WebServer.h>
+#include "src/Report.h"
+#include "WebClient.h"
+#include <WebServer.h>
 
 namespace WebUI {
     WebClient webClient;
@@ -30,7 +29,9 @@ namespace WebUI {
         }
         if (!_header_sent) {
             _webserver->setContentLength(CONTENT_LENGTH_UNKNOWN);
-            _webserver->sendHeader("Content-Type", "text/html");
+            // The webserver code automatically sends Content-Type: text/html
+            // so no need to do it explicitly
+            // _webserver->sendHeader("Content-Type", "text/html");
             _webserver->sendHeader("Cache-Control", "no-cache");
             _webserver->send(200);
             _header_sent = true;
@@ -50,7 +51,9 @@ namespace WebUI {
         return length;
     }
 
-    size_t WebClient::write(uint8_t data) { return write(&data, 1); }
+    size_t WebClient::write(uint8_t data) {
+        return write(&data, 1);
+    }
 
     void WebClient::flush() {
         if (_webserver && _buflen) {
@@ -59,9 +62,37 @@ namespace WebUI {
         }
     }
 
+    void WebClient::sendLine(MsgLevel level, const char* line) {
+        print_msg(level, line);
+    }
+    void WebClient::sendLine(MsgLevel level, const std::string* line) {
+        print_msg(level, line->c_str());
+        delete line;
+    }
+    void WebClient::sendLine(MsgLevel level, const std::string& line) {
+        print_msg(level, line.c_str());
+    }
+
+    void WebClient::out(const char* s, const char* tag) {
+        write((uint8_t*)s, strlen(s));
+    }
+
+    void WebClient::out(const std::string& s, const char* tag) {
+        write((uint8_t*)s.c_str(), s.size());
+    }
+
+    void WebClient::out_acked(const std::string& s, const char* tag) {
+        out(s, tag);
+    }
+
+    void WebClient::sendError(int code, const std::string& line) {
+        if (_webserver) {
+            _webserver->send(code, "text/plain", line.c_str());
+        }
+    }
+
     WebClient::~WebClient() {
         flush();
         _webserver->sendContent("");  //close connection
     }
 }
-#endif
